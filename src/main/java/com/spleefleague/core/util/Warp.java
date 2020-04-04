@@ -1,0 +1,197 @@
+/*
+ * To change this license header, choose License Headers in Project Properties.
+ * To change this template file, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+package com.spleefleague.core.util;
+
+import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
+import com.spleefleague.core.Core;
+import com.spleefleague.core.chat.Chat;
+import com.spleefleague.core.io.converter.LocationConverter;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import net.md_5.bungee.api.chat.ClickEvent;
+import net.md_5.bungee.api.chat.ComponentBuilder;
+import net.md_5.bungee.api.chat.HoverEvent;
+import net.md_5.bungee.api.chat.TextComponent;
+import org.bson.Document;
+import org.bukkit.Location;
+
+/**
+ * @author NickM13
+ */
+public class Warp {
+    
+    private static Map<String, Warp> warps = new TreeMap<>();
+    private static Map<String, Set<Warp>> folders = new TreeMap<>();
+    private static MongoCollection warpCollection = null;
+    
+    private static String DEFAULT_FOLDER = "..";
+    
+    public static void init() {
+        warpCollection = Core.getInstance().getPluginDB().getCollection("Warps");
+        MongoCursor<Document> it = warpCollection.find().iterator();
+        createFolder(DEFAULT_FOLDER);
+        while (it.hasNext()) {
+            Document doc = it.next();
+            Warp warp = new Warp(doc);
+            createFolder(warp.getFolder());
+            folders.get(warp.getFolder()).add(warp);
+            warps.put(warp.getName().toLowerCase(), warp);
+        }
+    }
+    public static void close() {
+        if (warpCollection == null) return;
+        
+        for (HashMap.Entry<String, Warp> w : warps.entrySet()) {
+            if (w.getValue().hasChanged) {
+                List loc = LocationConverter.save(w.getValue().location);
+                if (loc != null) {
+                    if (warpCollection.find(new Document("name", w.getValue().name)).first() != null) {
+                        warpCollection.deleteMany(new Document("name", w.getValue().name));
+                    }
+                    warpCollection.insertOne(new Document("name", w.getValue().name).append("location", loc).append("folder", w.getValue().getFolder()));
+                }
+            }
+        }
+    }
+    
+    public static boolean createFolder(String folder) {
+        if (folders.containsKey(folder.toLowerCase())) return true;
+        folders.put(folder, new HashSet<>());
+        return true;
+    }
+    public static boolean deleteFolder(String folder) {
+        if (folder.equals(DEFAULT_FOLDER)) {
+            return false;
+        }
+        for (Warp w : folders.get(folder.toLowerCase())) {
+            w.setFolder(DEFAULT_FOLDER);
+        }
+        return true;
+    }
+    public static void moveWarp(String warpName, String folder) {
+        folder = folder.toLowerCase();
+        if (!folders.containsKey(folder)) folders.put(folder, new HashSet<>());
+        Warp warp = getWarp(warpName);
+        folders.get(warp.getFolder()).remove(warp);
+        folders.get(folder).add(warp);
+        warp.setFolder(folder);
+    }
+    
+    public static Set<String> getWarpNames() {
+        Set<String> warpFiled = new HashSet<>();
+        for (Warp w : warps.values()) {
+            if (w.getFolder().equals(DEFAULT_FOLDER)) {
+                warpFiled.add(w.getName());
+            } else {
+                warpFiled.add(w.getFolder() + ":" + w.getName());
+            }
+        }
+        return warpFiled;
+    }
+    public static Set<String> getWarpFolders() {
+        return folders.keySet();
+    }
+    
+    public static TextComponent getWarpsFormatted() {
+        TextComponent message = new TextComponent("");
+        TextComponent warpstr;
+        
+        Iterator<HashMap.Entry<String, Warp>> wit = warps.entrySet().iterator();
+        
+        while (wit.hasNext()) {
+            Warp warp = wit.next().getValue();
+            warpstr = new TextComponent(warp.name);
+            warpstr.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, new ComponentBuilder("Click to warp to '" + warpstr.getText() + "'").create()));
+            warpstr.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/warp " + warp.name));
+            warpstr.setColor(Chat.getColor("DEFAULT").asBungee());
+            message.addExtra(warpstr);
+            if (wit.hasNext()) {
+                message.addExtra(new TextComponent(", "));
+            }
+        }
+        
+        return message;
+    }
+    public static TextComponent getWarpsFormatted(String folder) {
+        TextComponent message = new TextComponent("");
+        TextComponent warpstr;
+        
+        Iterator<HashMap.Entry<String, Warp>> wit = warps.entrySet().iterator();
+        
+        boolean first = true;
+        while (wit.hasNext()) {
+            Warp warp = wit.next().getValue();
+            if (warp.getFolder().equalsIgnoreCase(folder)) {
+                if (!first) {
+                    message.addExtra(new TextComponent(", "));
+                } else first = false;
+                warpstr = new TextComponent(warp.name);
+                warpstr.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, new ComponentBuilder("Click to warp to '" + warpstr.getText() + "'").create()));
+                warpstr.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/warp " + warp.name));
+                warpstr.setColor(Chat.getColor("DEFAULT").asBungee());
+                message.addExtra(warpstr);
+            }
+        }
+        
+        return message;
+    }
+    
+    public static Warp getWarp(String name) {
+        String a[] = name.split(":", 2);
+        return warps.get(a[a.length-1].toLowerCase());
+    }
+    public static void setWarp(String name, Location loc) {
+        Warp warp = new Warp(name, loc, DEFAULT_FOLDER);
+        warp.hasChanged = true;
+        warps.put(name.toLowerCase(), warp);
+    }
+    public static boolean delWarp(String name) {
+        if (warps.containsKey(name.toLowerCase())) {
+            warpCollection.deleteOne(new Document("name", warps.get(name.toLowerCase()).name));
+            warps.remove(name.toLowerCase());
+            return true;
+        }
+        return false;
+    }
+    
+    public String name;
+    public Location location;
+    public String folder;
+    public boolean hasChanged;
+    
+    private Warp(Document doc) {
+        this(doc.get("name", String.class), LocationConverter.load(doc.get("location", List.class)), doc.get("folder", String.class));
+    }
+    private Warp(String name, Location location, String folder) {
+        this.name = name;
+        this.location = location;
+        this.hasChanged = false;
+        if (folder == null) this.folder = DEFAULT_FOLDER;
+        else                this.folder = folder;
+    }
+    
+    public String getName() {
+        return name;
+    }
+    public Location getLocation() {
+        return location;
+    }
+    public void setFolder(String folder) {
+        this.folder = folder;
+        hasChanged = true;
+    }
+    public String getFolder() {
+        return folder;
+    }
+    
+}
